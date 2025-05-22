@@ -5,7 +5,7 @@ import time # Added for time.sleep
 from grid import Tetromino
 GAME_TYPE = 'regular'
 
-pause_time = 0.1 # Define pause_time for AI watching
+pause_time = 0.01 # Define pause_time for AI watching
 
 os.environ["CUDA_VISIBLE_DEVICES"] = "-1"
 os.environ['PYGAME_HIDE_SUPPORT_PROMPT'] = "hide"
@@ -180,35 +180,74 @@ def ai_play(model, max_games=100, mode='piece', is_gui_on=True):
 
     pause_time = 0.00
 
-    while True and episode_count < max_games:
-        env.reset()
-        for step in range(max_steps_per_episode):
-            states, add_scores, dones, _, _, moves, _ = env.get_all_possible_states_input()
-            rewards = get_reward(add_scores, dones)
-            q = rewards + model(split_input(states))
-            best = tf.argmax(q).numpy()[0]
+    log_filename = os.path.join(FOLDER_NAME, 'ai_play_log.csv')
+    log_file_exists = os.path.isfile(log_filename)
 
-            if mode == 'step':
-                best_moves = moves[best]
+    with open(log_filename, 'a', newline='') as csvfile:
+        log_writer = csv.writer(csvfile)
+        if not log_file_exists:
+            log_writer.writerow(['Timestamp', 'Seed', 'GameNumber', 'FinalScore', 'LinesCleared', 'Tetrises', 'TSD', 'TSM', 'TSS', 'MaxCombo', 'PiecesPlaced', 'SessionHighScore'])
+        
+        for episode_count in range(max_games):
+            env.reset()
+            current_seed = env.current_state.seed
+            high_score = 0 # Initialize high score for this session
+            start_time = time.time()
 
-                for i in range(len(best_moves) - 1):
-                    move = best_moves[i]
-                    env.step(action=move)
+            for step in range(max_steps_per_episode):
+                states, add_scores, dones, _, _, moves, _ = env.get_all_possible_states_input()
+                rewards = get_reward(add_scores, dones)
+                q = rewards + model(split_input(states))
+                best = tf.argmax(q).numpy()[0]
+
+                if mode == 'step':
+                    best_moves = moves[best]
+
+                    for i in range(len(best_moves) - 1):
+                        move = best_moves[i]
+                        env.step(action=move)
+                        env.render()
+                        time.sleep(pause_time)
+                    env.step(chosen=best)
                     env.render()
                     time.sleep(pause_time)
-                env.step(chosen=best)
-                env.render()
-                time.sleep(pause_time)
-            else:
-                env.step(chosen=best)
-                env.render()
-                time.sleep(pause_time)
+                else:
+                    env.step(chosen=best)
+                    env.render()
+                    time.sleep(pause_time)
 
-            if env.is_done() or step == max_steps_per_episode - 1:
-                episode_count += 1
-                total_score += env.current_state.score
-                print('episode #{}:   score:{}'.format(episode_count, env.current_state.score))
-                break
+                if env.is_done() or step == max_steps_per_episode - 1:
+                    episode_count += 1
+                    final_score = env.current_state.score
+                    total_score += final_score
+                    lines_cleared = env.current_state.lines_cleared
+                    tetrises = env.current_state.tetrises
+                    tsd = env.current_state.tsd
+                    tsm = env.current_state.tsm
+                    tss = env.current_state.tss
+                    max_combo = env.current_state.max_combo
+                    pieces_placed = env.current_state.pieces_placed
+
+                    if final_score > high_score:
+                        high_score = final_score
+                    
+                    print('episode #{}:   score:{}'.format(episode_count, final_score))
+                    log_writer.writerow([
+                        start_time, 
+                        current_seed, 
+                        episode_count, 
+                        final_score, 
+                        lines_cleared, 
+                        tetrises,
+                        tsd,
+                        tsm,
+                        tss,
+                        max_combo,
+                        pieces_placed,
+                        high_score # Added session high score
+                    ])
+                    csvfile.flush() # Ensure data is written immediately
+                    break
 
     print('average score = {:7.2f}'.format(total_score / max_games))
 
@@ -225,34 +264,72 @@ def ai_play_search(model, max_games=100, is_gui_on=True):
 
     pause_time = 0.04
 
-    while episode_count < max_games:
-        env.reset()
-        old_state = env.current_state.copy()
-        moves_buffer = []
-        for step in range(max_steps_per_episode):
-            env_gui.current_state = old_state.copy()
+    log_filename = os.path.join(FOLDER_NAME, 'ai_play_search_log.csv')
+    log_file_exists = os.path.isfile(log_filename)
+
+    with open(log_filename, 'a', newline='') as csvfile:
+        log_writer = csv.writer(csvfile)
+        if not log_file_exists:
+            log_writer.writerow(['Timestamp', 'Seed', 'GameNumber', 'FinalScore', 'LinesCleared', 'Tetrises', 'TSD', 'TSM', 'TSS', 'MaxCombo', 'PiecesPlaced', 'SessionHighScore'])
+
+        for episode_count in range(max_games):
+            env.reset()
             old_state = env.current_state.copy()
-            moves = []
-            thread = threading.Thread(target=ai_get_moves, args=(model, env, moves))
-            thread.start()
+            moves_buffer = []
+            current_seed = env.current_state.seed
+            high_score = 0 # Initialize high score for this session
+            start_time = time.time()
 
-            for m in moves_buffer:
-                env_gui.step(action=m)
-                env_gui.render()
-                time.sleep(pause_time)
+            for step in range(max_steps_per_episode):
+                env_gui.current_state = old_state.copy()
+                old_state = env.current_state.copy()
+                moves = []
+                thread = threading.Thread(target=ai_get_moves, args=(model, env, moves))
+                thread.start()
 
-            thread.join()
-            moves_buffer = moves
+                for m in moves_buffer:
+                    env_gui.step(action=m)
+                    env_gui.render()
+                    time.sleep(pause_time)
 
-            if env.current_state.game_status == 'gameover':
-                break
+                thread.join()
+                moves_buffer = moves
 
-            if env.is_done() or step >= max_steps_per_episode - 1:
-                episode_count += 1
-                total_score += env.current_state.score
-                print('episode #{}:   score:{}'.format(episode_count, env.current_state.score))
-                break
+                if env.current_state.game_status == 'gameover':
+                    break
 
+                if env.is_done() or step >= max_steps_per_episode - 1:
+                    episode_count += 1
+                    final_score = env.current_state.score
+                    total_score += final_score
+                    lines_cleared = env.current_state.lines_cleared
+                    tetrises = env.current_state.tetrises
+                    tsd = env.current_state.tsd
+                    tsm = env.current_state.tsm
+                    tss = env.current_state.tss
+                    max_combo = env.current_state.max_combo
+                    pieces_placed = env.current_state.pieces_placed
+
+                    if final_score > high_score:
+                        high_score = final_score
+
+                    print('episode #{}:   score:{}'.format(episode_count, final_score))
+                    log_writer.writerow([
+                        start_time, 
+                        current_seed, 
+                        episode_count, 
+                        final_score, 
+                        lines_cleared, 
+                        tetrises,
+                        tsd,
+                        tsm,
+                        tss,
+                        max_combo,
+                        pieces_placed,
+                        high_score # Added session high score
+                    ])
+                    csvfile.flush()
+                    break
     print('average score = {:7.2f}'.format(total_score / max_games))
 
 
