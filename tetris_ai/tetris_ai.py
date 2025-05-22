@@ -152,7 +152,7 @@ def load_model(filepath=None):
         exit()
 
     model_loaded.compile(
-        optimizer=keras.optimizers.Adam(0.001),
+        optimiser=keras.optimizers.Adam(0.001),
         # loss='huber_loss',
         loss='mean_squared_error',
         metrics=['mean_squared_error']
@@ -191,7 +191,7 @@ def ai_play(model, max_games=100, mode='piece', is_gui_on=True):
         for episode_count in range(max_games):
             env.reset()
             current_seed = env.current_state.seed
-            high_score = 0 # Initialize high score for this session
+            high_score = 0 # Initialise high score for this session
             start_time = time.time()
 
             for step in range(max_steps_per_episode):
@@ -277,7 +277,7 @@ def ai_play_search(model, max_games=100, is_gui_on=True):
             old_state = env.current_state.copy()
             moves_buffer = []
             current_seed = env.current_state.seed
-            high_score = 0 # Initialize high score for this session
+            high_score = 0 # Initialise high score for this session
             start_time = time.time()
 
             for step in range(max_steps_per_episode):
@@ -383,7 +383,7 @@ def search_one_step(model, gamestates_old, env, gamestates_steps_old=None, rewar
         gamestates_steps_old = [[]] * len(gamestates_old)
 
     if reward_prev_old is None:
-        # Ensure reward_prev_old is a list of scalars if initialized here
+        # Ensure reward_prev_old is a list of scalars if initialised here
         reward_prev_old = np.array([0.0] * len(gamestates_old)) # Use float for consistency
 
     for i in range(len(gamestates_old)):
