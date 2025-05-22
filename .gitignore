@@ -4,3 +4,4 @@ buffer_*.pkl
 dataset_*.pkl
 outer_*.keras
 record.txt
+*.Training.zip
