@@ -45,7 +45,8 @@ rand = random.Random()
 penalty = -500
 # reward_coef = [1.0, 0.5, 0.3, 0.2]
 reward_coef = [1.0, 1.0, 1.0, 1.0]
-reward_coef_plan = [[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], 1, 50]
+# reward_coef_plan = [[1.0, 1.0, 1.0, 1.0], [1.0, 1.0, 1.0, 1.0], 1, 50]
+reward_coef_plan = [[1.0, 1.0, 1.0, 1.0], [1.5, 1.2, 1.0, 0.8], 1, 50] # Updated plan
 num_search_best = 6
 num_search_rd = 6
 env_debug = None
@@ -519,6 +520,7 @@ def train(model, outer_start=0, outer_max=100):
     buffer_outer_max = 4
     repeat_new_buffer = 2
     history = None
+    global gamma # Ensure gamma is accessible
 
     for outer in range(outer_start + 1, outer_start + 1 + outer_max):
         print('-- outer loop # {} --'.format(outer))
@@ -549,24 +551,46 @@ def train(model, outer_start=0, outer_max=100):
 
         for inner in range(inner_max):
             print(f"      -- inner # {inner + 1}/{inner_max} --")
-            target = list()
-            for i in range(int(s.shape[0] / batch_training) + 1):
-                start = i * batch_training
-                end = min((i + 1) * batch_training, s.shape[0])
-                target.append(
-                    model(split_input(s_[start:end]), training=False).numpy().reshape(-1) + r_[start:end])
-            target = np.concatenate(target)
+            
+            # Corrected target calculation logic
+            q_s_prime_values = []
+            # Calculate Q(s') in batches if s_ is large, or directly if manageable
+            # Assuming s_ fits in memory for model prediction for simplicity here.
+            # If s_ is very large, batching this prediction is necessary.
+            # For now, let's assume direct prediction is fine as per original structure attempt.
+            
+            # Batched prediction for Q(s')
+            q_s_prime_batches = []
+            for i_batch in range(int(s_.shape[0] / batch_training) + 1):
+                start_batch = i_batch * batch_training
+                end_batch = min((i_batch + 1) * batch_training, s_.shape[0])
+                if start_batch >= end_batch:
+                    continue
+                q_s_prime_batch = model(split_input(s_[start_batch:end_batch]), training=False).numpy().reshape(-1)
+                q_s_prime_batches.append(q_s_prime_batch)
+            
+            if not q_s_prime_batches: # Handle empty s_ case if it occurs
+                if s_.shape[0] == 0:
+                    print("Warning: s_ is empty, skipping inner loop.")
+                    continue 
+                else: # Should not happen if loop above runs for non-empty s_
+                    raise ValueError("q_s_prime_batches is empty but s_ was not.")
 
-            for i in range(len(dones_)):
+            q_s_prime_full = np.concatenate(q_s_prime_batches)
+            
+            calculated_target = np.zeros_like(q_s_prime_full)
+
+            for i in range(len(dones_)): # dones_ corresponds to s, s_ pairs
                 if dones_[i]:
-                    target[i] = r_[i]
+                    calculated_target[i] = r_[i]  # Target is immediate reward if state is terminal
+                else:
+                    calculated_target[i] = r_[i] + gamma * q_s_prime_full[i]  # Target is r + gamma * Q(s')
 
-            target = target * gamma
             if inner == inner_max - 1:
                 save_training_dataset_to_file(filename=FOLDER_NAME + 'dataset/dataset_{}.pkl'.format(outer),
-                                              dataset=(s, target))
+                                              dataset=(s, calculated_target)) # Save s and correct target
 
-            history = model.fit(split_input(s), target, batch_size=batch_training, epochs=epoch_training, verbose=0)
+            history = model.fit(split_input(s), calculated_target, batch_size=batch_training, epochs=epoch_training, verbose=0)
             print('      loss = {:8.3f}   mse = {:8.3f}'.format(history.history['loss'][-1],
                                                                 history.history['mean_squared_error'][-1]))
 
@@ -728,26 +752,35 @@ def modify_reward_coef(outer):
 
 def get_reward(add_scores, dones, add=0):
     reward = list()
-    # manipulate the reward
+    # global penalty # penalty is a module-level global, direct access is fine for reading
+    # global reward_coef # reward_coef is a module-level global, direct access is fine for reading
+
     for i in range(len(add_scores)):
-        add_score = add_scores[i]
-
-        # give extra reward to t-spin
-        # if add_score != int(add_score):
-        #     add_score = add_score * 10
-
-        if add_score >= 90:
-            add_score = add_score * reward_coef[0]
-        elif add_score >= 50:
-            add_score = add_score * reward_coef[1]
-        elif add_score >= 20:
-            add_score = add_score * reward_coef[2]
-        elif add_score >= 5:
-            add_score = add_score * reward_coef[3]
+        current_add_score = add_scores[i]
+        current_reward_value = 0
 
         if dones[i]:
-            add_score += penalty
-        reward.append(add_score + add)
+            current_reward_value = penalty # Use the global penalty
+        else:
+            current_reward_value = current_add_score # Base reward from game score
+
+            # Apply reward_coef based on score thresholds.
+            if current_add_score >= 90:  # Approx 4 lines
+                current_reward_value *= reward_coef[0]
+            elif current_add_score >= 50:  # Approx 3 lines
+                current_reward_value *= reward_coef[1]
+            elif current_add_score >= 20:  # Approx 2 lines
+                current_reward_value *= reward_coef[2]
+            elif current_add_score > 0:  # At least 1 line or T-spin with score
+                current_reward_value *= reward_coef[3]
+            # If current_add_score is 0 (no lines cleared), current_reward_value remains 0 from this part.
+            
+        reward.append(current_reward_value + add)
+
+    # Ensure returning a 2D array even if add_scores was empty, though typically it won't be.
+    if not reward and not add_scores: # If add_scores was empty, reward will be empty.
+        return np.array([]).reshape([-1, 1])
+        
     return np.array(reward).reshape([-1, 1])
 
 def main():
