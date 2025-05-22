@@ -303,12 +303,37 @@ def search_one_step(model, gamestates_old, env, gamestates_steps_old=None, rewar
         gamestates_steps_old = [[]] * len(gamestates_old)
 
     if reward_prev_old is None:
-        reward_prev_old = np.array([0] * len(gamestates_old))
+        # Ensure reward_prev_old is a list of scalars if initialized here
+        reward_prev_old = np.array([0.0] * len(gamestates_old)) # Use float for consistency
 
     for i in range(len(gamestates_old)):
         states, add_scores, dones, _, _, _, gamestates = env.get_all_possible_states_input(gamestates_old[i])
         s_all.append(states)
-        r_all.append(get_reward(add_scores, dones, add=reward_prev_old[i] / gamma))
+        
+        current_reward_prev_item = reward_prev_old[i]
+        actual_prev_reward = 0.0 # Default
+        if isinstance(current_reward_prev_item, (int, float)):
+            actual_prev_reward = float(current_reward_prev_item)
+        elif isinstance(current_reward_prev_item, (np.ndarray, list, tuple)):
+            if len(current_reward_prev_item) == 1:
+                try:
+                    actual_prev_reward = float(current_reward_prev_item[0])
+                except TypeError: # Handle cases like np.array(None) if that could occur
+                    print(f"Warning: Could not convert element of reward_prev_old[i] to float: {current_reward_prev_item[0]}. Using 0.")
+                    actual_prev_reward = 0.0
+            elif not current_reward_prev_item: # Empty
+                actual_prev_reward = 0.0
+            else: # Multiple elements, should ideally not happen for a single reward value
+                print(f"Warning: Unexpected multi-element reward_prev_old[i]: {current_reward_prev_item}. Using first element if possible, else 0.")
+                try:
+                    actual_prev_reward = float(current_reward_prev_item[0])
+                except (IndexError, TypeError):
+                    actual_prev_reward = 0.0
+        else: # Other unexpected types
+            print(f"Warning: Unexpected type for reward_prev_old[i]: {type(current_reward_prev_item)}, value: {current_reward_prev_item}. Using 0.")
+            actual_prev_reward = 0.0
+            
+        r_all.append(get_reward(add_scores, dones, add=actual_prev_reward / gamma))
         done_all += dones
         gamestates_new += gamestates
         for j in range(len(gamestates)):
@@ -750,38 +775,62 @@ def modify_reward_coef(outer):
     print(f' reward_coef modified to {reward_coef}')
 
 
-def get_reward(add_scores, dones, add=0):
-    reward = list()
-    # global penalty # penalty is a module-level global, direct access is fine for reading
-    # global reward_coef # reward_coef is a module-level global, direct access is fine for reading
-
+def get_reward(add_scores, dones, add=0): # add is now always scalar
+    reward = []
+    # Assuming add_scores and dones are iterable and of the same length.
     for i in range(len(add_scores)):
-        current_add_score = add_scores[i]
-        current_reward_value = 0
+        current_add_score_item = add_scores[i]
+        current_done = dones[i]
+        
+        actual_add_score = 0.0 # Default
+        if isinstance(current_add_score_item, (int, float)):
+            actual_add_score = float(current_add_score_item)
+        elif isinstance(current_add_score_item, (list, tuple, np.ndarray)):
+            if len(current_add_score_item) == 1:
+                try:
+                    actual_add_score = float(current_add_score_item[0])
+                except TypeError:
+                    print(f"Warning: Could not convert element of add_scores to float: {current_add_score_item[0]}. Using 0.")
+                    actual_add_score = 0.0
+            elif not current_add_score_item: # Empty list/array
+                actual_add_score = 0.0
+            else: # Multiple elements
+                print(f"Warning: Unexpected multi-element score in add_scores: {current_add_score_item}. Using sum: {sum(current_add_score_item)}.")
+                try:
+                    actual_add_score = float(sum(current_add_score_item))
+                except TypeError:
+                    print(f"Warning: Could not sum elements of add_scores: {current_add_score_item}. Using 0.")
+                    actual_add_score = 0.0
+        else: # Other unexpected types
+            print(f"Warning: Unexpected type for score item: {type(current_add_score_item)}, value: {current_add_score_item}. Using 0.")
+            actual_add_score = 0.0
 
-        if dones[i]:
-            current_reward_value = penalty # Use the global penalty
+        current_reward_value = 0.0 # This will be scalar
+
+        if current_done:
+            current_reward_value = float(penalty)  # Apply penalty for game over
         else:
-            current_reward_value = current_add_score # Base reward from game score
-
-            # Apply reward_coef based on score thresholds.
-            if current_add_score >= 90:  # Approx 4 lines
-                current_reward_value *= reward_coef[0]
-            elif current_add_score >= 50:  # Approx 3 lines
-                current_reward_value *= reward_coef[1]
-            elif current_add_score >= 20:  # Approx 2 lines
-                current_reward_value *= reward_coef[2]
-            elif current_add_score > 0:  # At least 1 line or T-spin with score
-                current_reward_value *= reward_coef[3]
-            # If current_add_score is 0 (no lines cleared), current_reward_value remains 0 from this part.
+            # Apply reward_coef based on score thresholds using actual_add_score (scalar)
+            if actual_add_score >= 90:
+                current_reward_value = actual_add_score * reward_coef[0]
+            elif actual_add_score >= 50:
+                current_reward_value = actual_add_score * reward_coef[1]
+            elif actual_add_score >= 20:
+                current_reward_value = actual_add_score * reward_coef[2]
+            elif actual_add_score > 0:
+                current_reward_value = actual_add_score * reward_coef[3]
+            # If actual_add_score is 0 (no lines cleared), current_reward_value remains 0.0.
             
-        reward.append(current_reward_value + add)
-
-    # Ensure returning a 2D array even if add_scores was empty, though typically it won't be.
-    if not reward and not add_scores: # If add_scores was empty, reward will be empty.
+        # Ensure current_reward_value is float before adding
+        current_reward_value = float(current_reward_value)
+            
+        reward.append(current_reward_value + add) # scalar + scalar = scalar
+    
+    # reward is now a list of scalars.
+    if not reward: # Handles case where add_scores was empty
         return np.array([]).reshape([-1, 1])
         
-    return np.array(reward).reshape([-1, 1])
+    return np.array(reward, dtype=float).reshape([-1, 1]) # Specify dtype for robustness
 
 def main():
 
