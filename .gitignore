@@ -5,3 +5,4 @@ dataset_*.pkl
 outer_*.keras
 record.txt
 *.Training.zip
+tetris_regular_cnn_v1_oct_27/ai_play_search_log.csv
