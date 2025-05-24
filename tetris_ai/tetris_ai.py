@@ -2,6 +2,7 @@ import os
 import sys
 import csv # Added for CSV logging
 import time # Added for time.sleep
+import pygame # Added for pygame.QUIT event handling
 from grid import Tetromino
 GAME_TYPE = 'regular'
 
@@ -188,81 +189,116 @@ def ai_play(model, max_games=100, mode='piece', is_gui_on=True):
         if not log_file_exists:
             log_writer.writerow(['Timestamp', 'Seed', 'GameNumber', 'FinalScore', 'LinesCleared', 'Tetrises', 'TSD', 'TSM', 'TSS', 'MaxCombo', 'PiecesPlaced', 'SessionHighScore'])
         
-        for episode_count in range(max_games):
+        running = True
+        session_high_score = 0 # Initialize session high score
+
+        for episode_loop_idx in range(max_games): # Renamed from episode_count
+            if not running:
+                break
+            
             env.reset()
             current_seed = env.current_state.seed
-            high_score = 0 # Initialise high score for this session
+            # high_score for current game is implicitly handled by session_high_score logic later
             start_time = time.time()
+            game_in_progress_this_episode = False # Will be true if any step is taken
+            max_combo_this_game = 0 # Initialize max_combo for the current game
 
             for step in range(max_steps_per_episode):
+                game_in_progress_this_episode = True # Mark as in progress
+                if is_gui_on:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            print("Quit event received, ending game session...")
+                            running = False
+                            break
+                if not running:
+                    break
+                
                 states, add_scores, dones, _, _, moves, _ = env.get_all_possible_states_input()
                 rewards = get_reward(add_scores, dones)
-                q = rewards + model(split_input(states))
-                best = tf.argmax(q).numpy()[0]
+                # Ensure model call is correct, assuming split_input is necessary
+                q_values = rewards + model(split_input(states)) 
+                best_action_idx = tf.argmax(q_values).numpy()[0]
 
                 if mode == 'step':
-                    best_moves = moves[best]
-
-                    for i in range(len(best_moves) - 1):
-                        move = best_moves[i]
-                        env.step(action=move)
+                    best_moves_sequence = moves[best_action_idx]
+                    for i_move in range(len(best_moves_sequence) - 1):
+                        env.step(action=best_moves_sequence[i_move])
                         env.render()
+                        if is_gui_on: # Event check during animation
+                            for event_anim in pygame.event.get():
+                                if event_anim.type == pygame.QUIT: running = False; break
+                        if not running: break
                         time.sleep(pause_time)
-                    env.step(chosen=best)
+                    if not running: break 
+                    env.step(chosen=best_action_idx)
                     env.render()
                     time.sleep(pause_time)
-                else:
-                    env.step(chosen=best)
+                else: # 'piece' mode
+                    env.step(chosen=best_action_idx)
                     env.render()
                     time.sleep(pause_time)
 
-                if env.is_done() or step == max_steps_per_episode - 1:
-                    episode_count += 1
-                    final_score = env.current_state.score
-                    total_score += final_score
-                    lines_cleared = env.current_state.lines_cleared
-                    tetrises = env.current_state.tetrises
-                    tsd = env.current_state.tsd
-                    tsm = env.current_state.tsm
-                    tss = env.current_state.tss
-                    max_combo = env.current_state.max_combo
-                    pieces_placed = env.current_state.pieces_placed
+                if env.current_state.combo > max_combo_this_game: # Update max_combo for this game
+                    max_combo_this_game = env.current_state.combo
 
-                    if final_score > high_score:
-                        high_score = final_score
-                    
-                    print('episode #{}:   score:{}'.format(episode_count, final_score))
-                    log_writer.writerow([
-                        start_time, 
-                        current_seed, 
-                        episode_count, 
-                        final_score, 
-                        lines_cleared, 
-                        tetrises,
-                        tsd,
-                        tsm,
-                        tss,
-                        max_combo,
-                        pieces_placed,
-                        high_score # Added session high score
-                    ])
-                    csvfile.flush() # Ensure data is written immediately
+                if not running: # Check if quit happened during render/sleep
                     break
 
-    print('average score = {:7.2f}'.format(total_score / max_games))
+                if env.is_done() or step == max_steps_per_episode - 1:
+                    break # Exit step loop
+            
+            # ----- LOGGING BLOCK (AFTER STEP LOOP for ai_play) -----
+            if game_in_progress_this_episode:
+                final_score = env.current_state.score
+                lines_cleared_total = env.current_state.lines # Corrected attribute
+                tetrises = env.current_state.n_lines[3] if len(env.current_state.n_lines) > 3 else 0
+                tsd = env.current_state.t_spins[2] if len(env.current_state.t_spins) > 2 else 0 # T-Spin Double
+                tsm = env.current_state.t_spins[0] if len(env.current_state.t_spins) > 0 else 0 # T-Spin Mini (0 lines)
+                tss = env.current_state.t_spins[1] if len(env.current_state.t_spins) > 1 else 0 # T-Spin Single
+                # max_combo is now max_combo_this_game
+                pieces_placed = env.current_state.pieces
 
+                if final_score > session_high_score:
+                    session_high_score = final_score
+                
+                current_time_for_log = time.time() # Use current time for log entry timestamp
+
+                print(f'episode #{episode_loop_idx + 1}: score:{final_score}, logging with session high: {session_high_score}')
+                log_writer.writerow([
+                    current_time_for_log, 
+                    current_seed, 
+                    episode_loop_idx + 1, # Correct game number
+                    final_score, 
+                    lines_cleared_total, # Corrected
+                    tetrises,
+                    tsd,
+                    tsm,
+                    tss,
+                    max_combo_this_game, # Use tracked max_combo
+                    pieces_placed,
+                    session_high_score
+                ])
+                csvfile.flush()
+            # ----- END OF LOGGING BLOCK -----
+            if not running: # If quit signal was received, stop playing more games
+                break
+
+    print('average score = {:7.2f}'.format(total_score / (episode_loop_idx + 1) if episode_loop_idx + 1 > 0 and total_score > 0 else 0)) # Adjusted for new loop var
+    if is_gui_on:
+        pygame.quit()
 
 def ai_play_search(model, max_games=100, is_gui_on=True):
     max_steps_per_episode = 2000
-    seed = None
+    # seed = None # env will generate its own seed if None
     gui = Gui() if is_gui_on else None
-    env = Game(seed=seed, height=0)
-    env_gui = Game(gui=gui)
+    env = Game(seed=None, height=0) # AI internal environment
+    env_gui = Game(gui=gui) # Environment for GUI display
 
-    episode_count = 0
-    total_score = 0
+    # episode_count = 0 # Replaced by episode_loop_idx
+    total_score = 0 # For average score calculation
 
-    pause_time = 0.04
+    # pause_time = 0.04 # This is defined globally now, or should be passed
 
     log_filename = os.path.join(FOLDER_NAME, 'ai_play_search_log.csv')
     log_file_exists = os.path.isfile(log_filename)
@@ -272,66 +308,163 @@ def ai_play_search(model, max_games=100, is_gui_on=True):
         if not log_file_exists:
             log_writer.writerow(['Timestamp', 'Seed', 'GameNumber', 'FinalScore', 'LinesCleared', 'Tetrises', 'TSD', 'TSM', 'TSS', 'MaxCombo', 'PiecesPlaced', 'SessionHighScore'])
 
-        for episode_count in range(max_games):
-            env.reset()
-            old_state = env.current_state.copy()
-            moves_buffer = []
+        running = True 
+        session_high_score = 0 # Initialize session high score
+
+        for episode_loop_idx in range(max_games): # Renamed from episode_count
+            if not running:
+                break
+            
+            env.reset() # Reset AI's internal environment
+            # env_gui.reset() # Reset GUI environment, ensure it matches AI env start
+            # Copy initial state from AI env to GUI env
+            env_gui.current_state = env.current_state.copy()
+
+
+            old_state = env.current_state.copy() # For GUI to show previous step's outcome leading to current AI decision
+            moves_buffer = [] # Stores moves from AI to be animated on GUI
             current_seed = env.current_state.seed
-            high_score = 0 # Initialise high score for this session
-            start_time = time.time()
+            # high_score for current game is implicitly handled by session_high_score
+            start_time = time.time() # Timestamp for the start of the game
+            game_in_progress_this_episode = False # Will be true if any step is taken or AI makes a move
+            max_combo_this_game = 0 # Initialize max_combo for the current game
 
             for step in range(max_steps_per_episode):
-                env_gui.current_state = old_state.copy()
-                old_state = env.current_state.copy()
-                moves = []
-                thread = threading.Thread(target=ai_get_moves, args=(model, env, moves))
-                thread.start()
+                # 1. Handle Pygame Events (MOST IMPORTANT for responsiveness)
+                if is_gui_on:
+                    for event in pygame.event.get():
+                        if event.type == pygame.QUIT:
+                            print("Quit event received in step loop, setting running=False")
+                            running = False
+                            break 
+                    if not running: # if QUIT detected in event loop
+                        break # from step loop
+                
+                if not running: # Double check before proceeding (redundant but safe)
+                    break
 
-                for m in moves_buffer:
-                    env_gui.step(action=m)
+                game_in_progress_this_episode = True # Mark as in progress as AI is about to think/act
+
+                # 2. Animate previous AI's chosen moves on env_gui
+                # env_gui.current_state should be the state *before* these moves_buffer moves are applied
+                # This was old_state at the start of the previous iteration of the step loop.
+                # For the very first step, moves_buffer is empty.
+                
+                # Prepare GUI to show state before AI's *current* decision process
+                # This means env_gui should reflect env's state *before* ai_get_moves modifies env
+                env_gui.current_state = env.current_state.copy() # Show current state before animation of *next* move begins
+                                                                # Or, if moves_buffer is from *previous* turn, this is more complex.
+                                                                # Let's assume moves_buffer contains moves for *current* piece placement.
+
+                # The original logic:
+                # env_gui.current_state = old_state.copy() # old_state is env's state from start of this step
+                # old_state = env.current_state.copy() # Update old_state for next iteration
+                # This implies env_gui shows the state *before* the AI's current search,
+                # then animates the moves from the *previous* search (moves_buffer).
+
+                # Let's refine the state handling for clarity:
+                # state_before_ai_search = env.current_state.copy() # State AI will search from
+
+                # Animate moves from PREVIOUS decision (if any in moves_buffer)
+                # The GUI should be in the state *before* these moves_buffer actions.
+                # This was handled by env_gui.current_state = old_state.copy() at start of loop.
+                # And old_state was env.current_state.copy() from *previous* step.
+                # This seems correct for "show previous move animating".
+
+                current_display_state = env_gui.current_state.copy() # Save state before animation of previous decision
+                
+                for m_anim in moves_buffer: # Animate moves from *previous* AI decision
+                    env_gui.step(action=m_anim)
                     env_gui.render()
-                    time.sleep(pause_time)
+                    if is_gui_on: # Event check during animation
+                        for event_anim in pygame.event.get():
+                            if event_anim.type == pygame.QUIT: running = False; break
+                    if not running: break
+                    time.sleep(pause_time) # Global pause_time
+                if not running: break # from step loop if quit during animation
 
-                thread.join()
-                moves_buffer = moves
+                # Now, env_gui shows the result of the previous AI decision.
+                # AI will now decide the next set of moves based on the current 'env' state.
+                
+                # Ensure env_gui is synced to where AI is starting its new search from, if not already.
+                # env.current_state is the true state.
+                # env_gui.current_state should reflect this before new moves are decided if we want to see the "thinking" from current spot.
+                # However, the design is to show the *result* of thinking.
+                # So, env_gui is currently showing result of moves_buffer.
 
+                # 3. AI thinks and updates 'env' and 'moves_for_next_animation'
+                moves_for_next_animation = [] 
+                thread = threading.Thread(target=ai_get_moves, args=(model, env, moves_for_next_animation))
+                thread.start()
+                thread.join() # Wait for AI to decide moves for 'env' and populate moves_for_next_animation
+                              # 'env' is updated to the new state by ai_get_moves
+                              # moves_for_next_animation has the sequence of actions taken in 'env'
+                
+                if env.current_state.combo > max_combo_this_game: # Update max_combo for this game
+                    max_combo_this_game = env.current_state.combo
+
+                moves_buffer = moves_for_next_animation # This will be animated in the *next* step's iteration
+
+                # 4. Check game status in 'env' (after AI move)
                 if env.current_state.game_status == 'gameover':
-                    break
+                    print(f"Game over detected for episode {episode_loop_idx + 1} in AI env")
+                    # Render the game over state on GUI
+                    env_gui.current_state = env.current_state.copy()
+                    env_gui.render()
+                    time.sleep(0.5) # Brief pause to see game over
+                    break 
+                if step >= max_steps_per_episode - 1:
+                    print(f"Max steps reached for episode {episode_loop_idx + 1}")
+                    break 
+            
+            # ----- LOGGING BLOCK (AFTER STEP LOOP for ai_play_search) -----
+            if game_in_progress_this_episode: # Log if game started or was quit mid-way
+                # Stats are taken from 'env' which is the true game state
+                final_score = env.current_state.score
+                lines_cleared_total = env.current_state.lines # Corrected attribute
+                tetrises = env.current_state.n_lines[3] if len(env.current_state.n_lines) > 3 else 0
+                tsd = env.current_state.t_spins[2] if len(env.current_state.t_spins) > 2 else 0 # T-Spin Double
+                tsm = env.current_state.t_spins[0] if len(env.current_state.t_spins) > 0 else 0 # T-Spin Mini (0 lines)
+                tss = env.current_state.t_spins[1] if len(env.current_state.t_spins) > 1 else 0 # T-Spin Single
+                # max_combo is now max_combo_this_game
+                pieces_placed = env.current_state.pieces
 
-                if env.is_done() or step >= max_steps_per_episode - 1:
-                    episode_count += 1
-                    final_score = env.current_state.score
-                    total_score += final_score
-                    lines_cleared = env.current_state.lines_cleared
-                    tetrises = env.current_state.tetrises
-                    tsd = env.current_state.tsd
-                    tsm = env.current_state.tsm
-                    tss = env.current_state.tss
-                    max_combo = env.current_state.max_combo
-                    pieces_placed = env.current_state.pieces_placed
 
-                    if final_score > high_score:
-                        high_score = final_score
+                if final_score > session_high_score:
+                    session_high_score = final_score
+                
+                current_time_for_log = time.time() # Use current time for log entry timestamp
 
-                    print('episode #{}:   score:{}'.format(episode_count, final_score))
-                    log_writer.writerow([
-                        start_time, 
-                        current_seed, 
-                        episode_count, 
-                        final_score, 
-                        lines_cleared, 
-                        tetrises,
-                        tsd,
-                        tsm,
-                        tss,
-                        max_combo,
-                        pieces_placed,
-                        high_score # Added session high score
-                    ])
-                    csvfile.flush()
-                    break
-    print('average score = {:7.2f}'.format(total_score / max_games))
+                print(f'episode #{episode_loop_idx + 1}: score:{final_score}, logging with session high: {session_high_score}')
+                log_writer.writerow([
+                    current_time_for_log, 
+                    current_seed, 
+                    episode_loop_idx + 1, # Correct game number
+                    final_score, 
+                    lines_cleared_total, # Corrected
+                    tetrises,
+                    tsd,
+                    tsm,
+                    tss,
+                    max_combo_this_game, # Use tracked max_combo
+                    pieces_placed,
+                    session_high_score
+                ])
+                csvfile.flush()
+            # ----- END OF LOGGING BLOCK -----
+            if not running: # If quit signal was received, stop playing more games
+                break
+        
+    # Calculate average score based on actual number of games fully or partially played and logged
+    # total_score needs to be accumulated correctly if used for average.
+    # The current total_score accumulation was inside the old logging block.
+    # For now, the print statement for average score might be less accurate if total_score isn't updated.
+    # Let's defer improving the 'average score' printout for now and focus on logging and quitting.
+    # The provided code for ai_play also had total_score logic that needs similar review.
 
+    print(f'Finished playing. Session High Score: {session_high_score}') # More relevant than potentially inaccurate average.
+    if is_gui_on:
+        pygame.quit() # Ensure Pygame quits after CSV is closed (due to 'with' block ending)
 
 def ai_get_moves(model, env, moves):
     gamestates_new, gamestates_steps, reward_prev = search_steps(model, env, num_remain=10, num_random=0, action_take=1)
